@@ -1,0 +1,154 @@
+# -*- coding:utf-8 -*-
+import requests,time,random
+
+import scrapy
+from bson.objectid import ObjectId
+from scrapy.pipelines.files import FilesPipeline
+from requests.adapters import HTTPAdapter
+import pymongo
+import traceback
+import json
+import re
+from lxml import etree
+import os
+import sys
+from golang.MongoUtil import MongoUtil
+from golang.items import GolangDetailItem
+import urllib
+import csv
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+from golang.items import TspItem
+class GolangSpider(scrapy.Spider):
+    name = 'GolangSpider'
+    custom_settings = {'DOWNLOAD_DELAY': 1, 'DOWNLOAD_TIMEOUT':30000}
+
+    def __init__(self, **kwargs):
+        #self.start_urls = []
+        start_urls = ['http://go-search.org/search']
+        host_prefix = "http://go-search.org"
+
+        super(GolangSpider, self).__init__(self, **kwargs)
+
+        print 'init'
+
+    def __str__(self):
+        return "GolangSPider"
+
+    def start_requests(self):
+        #yield 'https://www.baidu.com'
+        #print 'starting'
+
+        # inUse = 'http://go-search.org/search?q=&p='
+        # while i <= 20000:
+        #     iStr = str(i)
+        #     url = inUse + iStr
+        #     print url
+        #     i = i + 1
+        #     yield scrapy.Request(url, callback=self.parseArtifactLink)
+        # prefix = 'http://go-search.org/view?id='
+        # f = open('/home/hadoop/PycharmProjects/api.json')
+        # objList = json.loads(f.read())
+        # for line in objList:
+        #     tt = prefix + line.strip()
+        #
+        #     yield scrapy.Request(url = tt, callback=self.parseGolangDetails)
+        for unit in self.start_urls:
+            print unit
+            yield scrapy.Request(url = unit.strip(), callback = self.parseArtifactLink)
+
+
+    def parseArtifactLink(self, response):
+        lis =response.xpath("//ol[@class='list-group schres']/li")
+        for li in lis:
+
+            viewUrl = li.xpath("./div[@class='title']/a/@href").extract_first()
+            if viewUrl is not None:
+                target = self.host_prefix + viewUrl.strip()
+                yield scrapy.Request(target, callback=self.parseGolangDetails)
+
+        nextLink = response.xpath("//ul[@class='pagination']/li/a")
+        pts = 'http://go-search.org/search'
+        if nextLink is not None and len(nextLink) > 0:
+            linkText = nextLink[len(nextLink)-1].xpath("./text()").extract_first()
+            linkUrl = nextLink[len(nextLink)-1].xpath("./@href").extract_first()
+            if linkText is not None and linkText.strip() == "»" and linkUrl is not None:
+
+                uts = pts + linkUrl.strip()
+                print 'uts ', uts
+                yield scrapy.Request(uts, callback=self.parseArtifactLink)
+            else:
+                print linkText is not None
+                print len(linkText.strip()) == 0
+                print linkUrl is not None
+                print linkText
+                print 'fadc'
+
+
+
+
+    def parseGolangDetails(self, response):
+        links = response.xpath("//div[@class='container-fluid']/div/ul/li/a")
+        for link in links:
+            linkContent = link.xpath("./text()").extract_first()
+            if linkContent is not None:
+                linkContent = linkContent.strip()
+                if linkContent == 'JSON':
+                    jsonApi = link.xpath("./@href").extract_first()
+                    if jsonApi is not None:
+                        addr = self.host_prefix + jsonApi
+                        yield scrapy.Request(addr, meta = {"site_url":response.url}, callback=self.generateContent)
+
+    def generateContent(self, response):
+
+        body = response.body
+        siteUrl = response.meta['site_url']
+        jsonObj = json.loads(body)
+        projectUrl = jsonObj['ProjectURL']
+        projectName = jsonObj['Name']
+        staticRank = jsonObj['StaticRank']
+        projectStar = jsonObj['StarCount']
+        projectDesc = jsonObj['Description']
+
+        del jsonObj['ProjectURL']
+        del jsonObj['Name']
+        del jsonObj['StaticRank']
+        del jsonObj['StarCount']
+        del jsonObj['Description']
+
+        jsonObj['project_url'] = siteUrl.strip()
+        jsonObj['homepage'] = projectUrl.strip()
+        jsonObj['project_name'] = projectName
+        jsonObj['static_rank'] = staticRank
+        jsonObj['project_star'] = projectStar
+        jsonObj['project_desc'] = projectDesc
+        jsonObj['other_urls'] = [projectUrl]
+        if projectUrl.startswith('https://gopkg.in/'):
+            projectUrl = projectUrl.replace("https://","http://")
+            yield scrapy.Request(projectUrl.strip(), meta={"parsed_obj":jsonObj}, callback=self.parseGopkg)
+        else:
+
+            item = GolangDetailItem()
+            item['data'] = jsonObj
+            yield item
+
+    def parseGopkg(self, response):
+        previousObj = response.meta['parsed_obj']
+        forUrl = response.xpath("//div[@class='col-sm-12']/a[1]/@href").extract_first()
+        if forUrl is not None:
+            item = GolangDetailItem()
+            forUrl = forUrl.strip()
+            previousObj['homepage'] = forUrl.strip()
+            previousObj['other_urls'] = [forUrl.strip()]
+            item['data'] = previousObj
+            yield item
+        else:
+            item = GolangDetailItem()
+            item['data'] = previousObj
+            yield item
+
+
+
+
+
